@@ -41,23 +41,15 @@ defmodule Socket.Web do
                   { :binary, binary } |
                   { :fragmented, :text | :binary | :continuation | :end, binary } |
                   :close |
-                  { :close, atom, binary } |
+                  { :close, integer, binary } |
                   { :ping, binary } |
                   { :pong, binary }
 
-  @compile { :inline, opcode: 1, close_code: 1, key: 1, length: 1, forge: 2 }
+  @compile { :inline, opcode: 1, key: 1, length: 1, forge: 2 }
 
   Enum.each [ text: 0x1, binary: 0x2, close: 0x8, ping: 0x9, pong: 0xA ], fn { name, code } ->
     defp opcode(unquote(name)), do: unquote(code)
     defp opcode(unquote(code)), do: unquote(name)
-  end
-
-  Enum.each [ normal: 1000, going_away: 1001, protocol_error: 1002, unsupported_data: 1003,
-              reserved: 1004, no_status_received: 1005, abnormal: 1006, invalid_payload: 1007,
-              policy_violation: 1008, message_too_big: 1009, mandatory_extension: 1010,
-              internal_error: 1011, handshake: 1015 ], fn { name, code } ->
-    defp close_code(unquote(name)), do: unquote(code)
-    defp close_code(unquote(code)), do: unquote(name)
   end
 
   defmacrop known?(n) do
@@ -715,14 +707,14 @@ defmodule Socket.Web do
             <<>> -> :close
 
             << code :: 16, rest :: binary >> ->
-              { :close, close_code(code), rest }
+              { :close, code, rest }
           end
         end |> on_success(options)
 
       { :ok, nil } ->
         # 1006 is reserved for connection closed with no close frame
         # https://tools.ietf.org/html/rfc6455#section-7.4.1
-        { :ok, { :close, close_code(1006), nil } }
+        { :ok, { :close, 1006, nil } }
 
       { :ok, _ } ->
         { :error, :protocol_error }
@@ -901,12 +893,12 @@ defmodule Socket.Web do
   Close the socket sending a close request, unless `:wait` is set to `false` it
   blocks until the close response has been received, and then closes the
   underlying socket.
-  If :reason? is set to true and the response contains a closing reason
+  If :code? is set to true and the response contains a closing code
   and custom data the function returns it as a tuple.
   """
   @spec close(t, atom, Keyword.t) :: :ok  | {:ok, atom, binary} | { :error, error }
-  def close(%W{socket: socket, version: 13, mask: mask} = self, reason, options \\ []) do
-    { reason, data } = if is_tuple(reason), do: reason, else: { reason, <<>> }
+  def close(%W{socket: socket, version: 13, mask: mask} = self, code, options \\ []) do
+    { code, data } = if is_tuple(code), do: code, else: { code, <<>> }
     mask             = if Keyword.has_key?(options, :mask), do: options[:mask], else: mask
 
     socket |> Socket.Stream.send(
@@ -915,10 +907,10 @@ defmodule Socket.Web do
          opcode(:close) :: 4,
 
          forge(mask,
-           << close_code(reason) :: 16, data :: binary >>) :: binary >>)
+           << code :: 16, data :: binary >>) :: binary >>)
 
     unless options[:wait] == false do
-      do_close(self, recv(self, options), Keyword.get(options, :reason?, false), options)
+      do_close(self, recv(self, options), Keyword.get(options, :code?, false), options)
     end
   end
 
@@ -930,17 +922,17 @@ defmodule Socket.Web do
     abort(self)
   end
 
-  defp do_close(self, { :ok, { :close, reason, data } }, true, _) do
+  defp do_close(self, { :ok, { :close, code, data } }, true, _) do
     abort(self)
-    {:ok, reason, data}
+    {:ok, code, data}
   end
 
   defp do_close(self, { :ok, { :error, _ } }, _, _) do
     abort(self)
   end
 
-  defp do_close(self, _, reason?, options) do
-    do_close(self, recv(self, options), reason?, options)
+  defp do_close(self, _, code?, options) do
+    do_close(self, recv(self, options), code?, options)
   end
 
   @doc """
